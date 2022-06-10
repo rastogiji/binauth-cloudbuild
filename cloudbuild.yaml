@@ -1,0 +1,58 @@
+# CloudBuild Steps for Code Building and Deployment to Cloud Run with Automatic Attestation by a Binary Authorization Attestor
+
+steps:
+  # Build the Docker Image
+  - id: "Build Image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/{_ARTIFACT_REPOSTIORY_NAME}/${_IMAGE_NAME}:${SHORT_SHA}", "."]
+
+  # Push to Artifact Registry
+  - id: "Push Image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_REGION}-docker.pkg.dev/${PROJECT_ID}/{_ARTIFACT_REPOSTIORY_NAME}/${_IMAGE_NAME}:${SHORT_SHA}"]
+  
+  # Get Image SHA from Artifact Registry
+  - id: "Get Image Digest"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: /bin/bash
+    args: 
+      - -c
+      - |
+        gcloud artifacts docker images describe \
+        ${_REGION}-docker.pkg.dev/${PROJECT_ID}/{_ARTIFACT_REPOSTIORY_NAME}/${_IMAGE_NAME}:${SHORT_SHA} \
+        --format 'value(image_summary.digest)' > /workspace/image-sha.txt
+
+  # Attest Image for Binary Authorization
+  - id: "Attest Image"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: /bin/bash
+    args:
+      - -c
+      - |
+        gcloud beta container binauthz attestations sign-and-create \
+        --artifact-url=${_REGION}-docker.pkg.dev/${PROJECT_ID}/{_ARTIFACT_REPOSTIORY_NAME}/${_IMAGE_NAME}@`cat /workspace/image-sha.txt` \
+        --attestor=projects/${PROJECT_ID}/attestors/${_ATTESTOR_NAME} \
+        --keyversion-project=${PROJECT_ID} --keyversion-location=${_REGION} \
+        --keyversion-keyring=${_KEYRING_NAME} --keyversion-key=${_KEY_NAME} --keyversion=${_KEY_VERSION} 
+
+  # Deploy to Cloud Run
+  - id: "Image Deployment"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: /bin/bash
+    args: 
+      - -c
+      - |
+        gcloud run deploy ${_SERVICE_NAME} --region ${_REGION} \
+        --image ${_REGION}-docker.pkg.dev/${PROJECT_ID}/{_ARTIFACT_REPOSTIORY_NAME}/${_IMAGE_NAME}:${SHORT_SHA} \
+        --allow-unauthenticated --binary-authorization default
+       
+# Build Variables
+substitutions:
+  _REGION: asia-south1
+  _KEYRING_NAME: binauthz-keyring
+  _KEY_NAME: attestor-key-name
+  _KEY_VERSION: "1"
+  _SERVICE_NAME: test-service
+  _ARTIFACT_REPOSTIORY_NAME: test-repository
+  _IMAGE_NAME: test-image
+  _ATTESTOR_NAME: test-attestor
